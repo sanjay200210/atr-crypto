@@ -40,35 +40,39 @@ function calculateATR(data) {
 app.get("/api/top-atr", async (req, res) => {
   try {
     const now = Math.floor(Date.now() / 1000);
-    const from = now - 20 * 60; // last 20 minutes
+    const from = now - 20 * 60;
 
-    const instruments = await axios.get(ACTIVE_INSTRUMENTS);
-    const symbols = instruments.data;
+    const instrumentsRes = await axios.get(ACTIVE_INSTRUMENTS);
+    const symbols = instrumentsRes.data;
 
-    const result = {};
+    const requests = symbols.map(pair =>
+      axios
+        .get(CANDLES_URL, {
+          params: {
+            pair,
+            from,
+            to: now,
+            resolution: "1",
+            pcode: "f",
+          },
+        })
+        .then(response => {
+          const candles = response.data?.data;
+          if (!candles || candles.length === 0) return null;
 
-    for (let i = 0; i < symbols.length; i++) {
-      const pair = symbols[i];
+          const atr = calculateATR(candles);
+          if (!atr) return null;
 
-      const response = await axios.get(CANDLES_URL, {
-        params: {
-          pair,
-          from,
-          to: now,
-          resolution: "1",
-          pcode: "f",
-        },
-      });
+          return { pair, atr };
+        })
+        .catch(() => null) // fail silently, move on
+    );
 
-      const candles = response.data?.data;
-      if (!candles || candles.length === 0) continue;
+    const results = await Promise.all(requests);
 
-      const atr = calculateATR(candles);
-      if (atr) result[pair] = atr;
-    }
-
-    const top5 = Object.entries(result)
-      .sort((a, b) => b[1] - a[1])
+    const top5 = results
+      .filter(Boolean)
+      .sort((a, b) => b.atr - a.atr)
       .slice(0, 5);
 
     res.json({
@@ -80,6 +84,7 @@ app.get("/api/top-atr", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
 
 app.listen(3000, () => {
   console.log("🚀 CoinDCX backend running on port 3000");
