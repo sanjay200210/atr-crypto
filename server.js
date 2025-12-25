@@ -63,16 +63,17 @@ app.get("/api/top-atr", async (req, res) => {
           const atr = calculateATR(candles);
           if (!atr) return null;
 
-          return { pair, atr };
+          // 👇 SAME OLD FORMAT
+          return [pair, atr];
         })
-        .catch(() => null) // fail silently, move on
+        .catch(() => null)
     );
 
     const results = await Promise.all(requests);
 
     const top5 = results
       .filter(Boolean)
-      .sort((a, b) => b.atr - a.atr)
+      .sort((a, b) => b[1] - a[1])
       .slice(0, 5);
 
     res.json({
@@ -84,6 +85,7 @@ app.get("/api/top-atr", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
 
 
 app.listen(3000, () => {
