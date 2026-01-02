@@ -1,6 +1,7 @@
 import express from "express";
 import axios from "axios";
 import cors from "cors";
+import pLimit from "p-limit";
 
 const app = express();
 app.use(cors());
@@ -8,32 +9,33 @@ app.use(cors());
 const ACTIVE_INSTRUMENTS =
   "https://api.coindcx.com/exchange/v1/derivatives/futures/data/active_instruments?margin_currency_short_name[]=USDT";
 
-const CANDLES_URL = "https://public.coindcx.com/market_data/candlesticks";
+const INSTRUMENT_INFO =
+  "https://api.coindcx.com/exchange/v1/derivatives/futures/data/instrument";
+
+const CANDLES_URL =
+  "https://public.coindcx.com/market_data/candlesticks";
 
 const ATR_PERIOD = 14;
+const limit = pLimit(8); // 👈 concurrency control (sweet spot)
 
 function calculateATR(data) {
   if (data.length < ATR_PERIOD + 1) return null;
 
-  const TR = [];
+  let trSum = 0;
 
-  for (let i = 1; i < data.length; i++) {
+  for (let i = data.length - ATR_PERIOD; i < data.length; i++) {
     const high = data[i].high;
     const low = data[i].low;
     const prevClose = data[i - 1].close;
 
-    const tr = Math.max(
+    trSum += Math.max(
       high - low,
       Math.abs(high - prevClose),
       Math.abs(low - prevClose)
     );
-
-    TR.push(tr);
   }
 
-  const atr =
-    TR.slice(-ATR_PERIOD).reduce((a, b) => a + b, 0) / ATR_PERIOD;
-
+  const atr = trSum / ATR_PERIOD;
   return (atr * 100) / data[data.length - 1].close;
 }
 
@@ -42,34 +44,55 @@ app.get("/api/top-atr", async (req, res) => {
     const now = Math.floor(Date.now() / 1000);
     const from = now - 20 * 60;
 
-    const instrumentsRes = await axios.get(ACTIVE_INSTRUMENTS);
-    const symbols = instrumentsRes.data;
+    const { data: symbols } = await axios.get(ACTIVE_INSTRUMENTS);
 
-    const requests = symbols.map(pair =>
-      axios
-        .get(CANDLES_URL, {
-          params: {
-            pair,
-            from,
-            to: now,
-            resolution: "1",
-            pcode: "f",
-          },
-        })
-        .then(response => {
-          const candles = response.data?.data;
-          if (!candles || candles.length === 0) return null;
+    const tasks = symbols.map(symbol =>
+      limit(async () => {
+        try {
+          // 1️⃣ Instrument info (price_increment)
+          const infoRes = await axios.get(INSTRUMENT_INFO, {
+            params: {
+              pair: symbol,
+              margin_currency_short_name: "USDT",
+            },
+          });
 
+          const priceIncrement =
+            parseFloat(infoRes.data?.instrument?.price_increment);
+
+          if (!priceIncrement) return null;
+
+          // 2️⃣ Candles
+          const candleRes = await axios.get(CANDLES_URL, {
+            params: {
+              pair: symbol,
+              from,
+              to: now,
+              resolution: "1",
+              pcode: "f",
+            },
+          });
+
+          const candles = candleRes.data?.data;
+          if (!candles || candles.length < ATR_PERIOD + 1) return null;
+
+          const lastClose = candles[candles.length - 1].close;
+
+          // 3️⃣ Python-style filter
+          if ((priceIncrement * 100) / lastClose > 0.1) return null;
+
+          // 4️⃣ ATR %
           const atr = calculateATR(candles);
           if (!atr) return null;
 
-          // 👇 SAME OLD FORMAT
-          return [pair, atr];
-        })
-        .catch(() => null)
+          return [symbol, atr];
+        } catch {
+          return null;
+        }
+      })
     );
 
-    const results = await Promise.all(requests);
+    const results = await Promise.all(tasks);
 
     const top5 = results
       .filter(Boolean)
@@ -85,8 +108,6 @@ app.get("/api/top-atr", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
-
 
 app.listen(3000, () => {
   console.log("🚀 CoinDCX backend running on port 3000");
