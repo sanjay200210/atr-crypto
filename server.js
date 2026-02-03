@@ -42,7 +42,7 @@ function calculateATR(data) {
 app.get("/api/top-atr", async (req, res) => {
   try {
     const now = Math.floor(Date.now() / 1000);
-    const from = now - 20 * 60;
+    const from = now - (20 * 24 * 60 * 60);
 
     const { data: symbols } = await axios.get(ACTIVE_INSTRUMENTS);
 
