@@ -68,7 +68,7 @@ app.get("/api/top-atr", async (req, res) => {
               pair: symbol,
               from,
               to: now,
-              resolution: "1",
+              resolution: "1D",
               pcode: "f",
             },
           });
